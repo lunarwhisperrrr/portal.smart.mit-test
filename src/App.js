@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 import { LoremIpsum } from "lorem-ipsum";
 
@@ -7,76 +7,75 @@ import { firebase } from "./firebase/firebase";
 const lorem = new LoremIpsum({
   sentencesPerParagraph: {
     max: 8,
-    min: 4
+    min: 4,
   },
   wordsPerSentence: {
     max: 16,
-    min: 4
-  }
+    min: 4,
+  },
 });
 
 const names = ["Iman", "Daniela", "Pooja", "Amit"];
 const authenticatedUser = "Iman";
-const messageIds = [];
 const messagesNum = 25;
-for (let mIdx = 0; mIdx < messagesNum; mIdx++) {
-  messageIds.push("M" + mIdx);
-}
+const messageIds = Array.from({ length: messagesNum }, (_, i) => "M" + i);
 
-let firstTime = true;
+// let firstTime = true;
 
 export default function App() {
   const [messages, setMessages] = useState({});
-  const [userTotalVotes, setUserTotalVotes] = useState(0);
+  const inited = useRef(false);
+  // const [userTotalVotes, setUserTotalVotes] = useState(0);
+  const userTotalVotes = Object.keys(messages).reduce(
+    (acc, key) => acc + messages[key].totalVotes,
+    0
+  );
 
   // Generate some messages and votes in the database to start with.
   useEffect(() => {
     const generateMessages = async () => {
-      if (firstTime) {
-        firstTime = false;
-        const totalMVotes = {};
-        const mVoteDocs = await firebase.db.collection("mVotes").get();
-        console.log({ mVotesNum: mVoteDocs.docs.length });
-        if (mVoteDocs.docs.length === 0) {
-          for (let mIdx = 0; mIdx < messagesNum; mIdx++) {
-            for (let vIdx = 0; vIdx < names.length; vIdx++) {
-              console.log({ mIdx, vIdx });
-              const voter = names[vIdx];
-              const messageId = messageIds[mIdx];
-              const userVote = Math.random() < 0.5;
-              totalMVotes[messageId]
-                ? (totalMVotes[messageId] += userVote)
-                : (totalMVotes[messageId] = 0 + userVote);
-              const voteRef = firebase.db.collection("mVotes").doc();
-              firebase.batchSet(voteRef, {
-                messageId,
-                voter,
-                userVote,
-                dateTime: firebase.firestore.Timestamp.fromDate(new Date())
-              });
-            }
-          }
-        }
-        const messageDocs = await firebase.db.collection("messages").get();
-        console.log({ messagesNum: messageDocs.docs.length });
-        if (messageDocs.docs.length === 0) {
-          for (let mIdx = 0; mIdx < messagesNum; mIdx++) {
+      console.log("generateMessages");
+      const totalMVotes = {};
+      const mVoteDocs = await firebase.db.collection("mVotes").get();
+      console.log({ mVotesNum: mVoteDocs.docs.length });
+      if (mVoteDocs.docs.length === 0) {
+        await Promise.all(
+          messageIds.map(async (messageId) => {
+            await Promise.all(
+              names.map(async (name) => {
+                const userVote = Math.random() < 0.5;
+
+                const voteRef = firebase.db.collection("mVotes").doc();
+                firebase.batchSet(voteRef, {
+                  messageId,
+                  name,
+                  userVote,
+                  dateTime: firebase.firestore.Timestamp.fromDate(new Date()),
+                });
+              })
+            );
+          })
+        );
+      }
+      const messageDocs = await firebase.db.collection("messages").get();
+      console.log({ messagesNum: messageDocs.docs.length });
+      if (messageDocs.docs.length === 0) {
+        await Promise.all(
+          messageIds.map(async (messageId) => {
             const sender = names[Math.floor(Math.random() * names.length)];
-            const messageId = messageIds[mIdx];
             const messageRef = firebase.db
               .collection("messages")
               .doc(messageId);
             firebase.batchSet(messageRef, {
               sender,
               message: lorem.generateSentences(1),
-              totalVotes: totalMVotes[messageId],
-              dateTime: firebase.firestore.Timestamp.fromDate(new Date())
+              dateTime: firebase.firestore.Timestamp.fromDate(new Date()),
             });
-          }
-        }
-        await firebase.commitBatch();
-        console.log("Created all the messages and votes documents.");
+          })
+        );
       }
+      await firebase.commitBatch();
+      console.log("Created all the messages and votes documents.");
     };
 
     generateMessages();
@@ -86,81 +85,68 @@ export default function App() {
   useEffect(() => {
     const messagesQuery = firebase.db.collection("messages");
     const messagesSnapshot = messagesQuery.onSnapshot((snapshot) => {
-      const docChanges = snapshot.docChanges();
+      const docChanges = snapshot.docChanges(); // Get doc changes
+      console.log("Changes:", docChanges);
       setMessages((oldMessages) => {
         const oMessages = { ...oldMessages };
-        for (let change of docChanges) {
+        docChanges.forEach((change) => {
           if (change.doc.id in oMessages) {
             oMessages[change.doc.id] = {
               ...oMessages[change.doc.id],
-              ...change.doc.data()
+              ...change.doc.data(),
             };
           } else {
             oMessages[change.doc.id] = change.doc.data();
           }
-        }
+        });
         return oMessages;
       });
     });
 
+    return () => messagesSnapshot();
+  }, []);
+
+  useEffect(() => {
     const votesQuery = firebase.db
       .collection("mVotes")
       .where("voter", "==", authenticatedUser);
     const votesSnapshot = votesQuery.onSnapshot((snapshot) => {
       const docChanges = snapshot.docChanges();
+      console.log("vote Changes", docChanges);
       setMessages((oldMessages) => {
         const oMessages = { ...oldMessages };
-        for (let change of docChanges) {
+        docChanges.forEach((change) => {
           const voteData = change.doc.data();
+          const changeType = change.type;
           if (voteData.messageId in oMessages) {
-            setUserTotalVotes((oldUserTotalVotes) => {
-              console.log({
-                oldUserTotalVotes,
-                mUserVote: oMessages[voteData.messageId].userVote,
-                vUserVote: voteData.userVote
-              });
-              if (oMessages[voteData.messageId].userVote) {
-                if (voteData.userVote) {
-                  return oldUserTotalVotes;
-                }
-                return oldUserTotalVotes - 1;
-              }
-              if (voteData.userVote) {
-                return oldUserTotalVotes + 1;
-              }
-              return oldUserTotalVotes;
-            });
             oMessages[voteData.messageId] = {
               ...oMessages[voteData.messageId],
               voter: voteData.voter,
-              userVote: voteData.userVote
+              userVote: voteData.userVote,
+              totalVotes:
+                oMessages[voteData.messageId].totalVotes +
+                (voteData.userVote ? 1 : changeType === 'added' ? 0 : -1),
             };
           } else {
-            setUserTotalVotes((oldUserTotalVotes) => {
-              console.log("Incrementing userTotalVotes");
-              return oldUserTotalVotes + voteData.userVote;
-            });
             oMessages[voteData.messageId] = {
               voter: voteData.voter,
-              userVote: voteData.userVote
+              userVote: voteData.userVote,
             };
           }
-        }
+        });
         return oMessages;
       });
     });
-    return () => {
-      messagesSnapshot();
-      votesSnapshot();
-    };
+    inited.current = true;
+    return () => votesSnapshot();
   }, []);
 
-  const upVote = (mId) => async (event) => {
+  const upVote = (mId) => async () => {
+    console.log(`Upvoting message ${mId}...`);
     const messageRef = firebase.db.collection("messages").doc(mId);
     await firebase.db.runTransaction(async (t) => {
       const messageDoc = await t.get(messageRef);
       if (messageDoc.exists) {
-        const messageData = messageDoc.data();
         const mVoteDocs = await firebase.db
           .collection("mVotes")
           .where("messageId", "==", mId)
@@ -173,10 +159,7 @@ export default function App() {
             .doc(mVoteDocs.docs[0].id);
           t.update(mVoteRef, {
             userVote: !voteData.userVote,
-            dateTime: firebase.firestore.Timestamp.fromDate(new Date())
-          });
-          t.update(messageRef, {
-            totalVotes: messageData.totalVotes + (voteData.userVote ? -1 : 1)
+            dateTime: firebase.firestore.Timestamp.fromDate(new Date()),
           });
         } else {
           const mVoteRef = firebase.db.collection("mVotes").doc();
@@ -184,10 +167,7 @@ export default function App() {
             messageId: mId,
             voter: authenticatedUser,
             userVote: true,
-            dateTime: firebase.firestore.Timestamp.fromDate(new Date())
-          });
-          t.update(messageRef, {
-            totalVotes: messageData.totalVotes + 1
+            dateTime: firebase.firestore.Timestamp.fromDate(new Date()),
           });
         }
       }
@@ -207,7 +187,7 @@ export default function App() {
   //   }
   //   await firebase.commitBatch();
   // };
-
+  console.log(messages);
   return (
     <div className="App">
       {/* <button onClick={deleteCollections}>Delete both collections!</button> */}
@@ -230,7 +210,7 @@ export default function App() {
                 <div>
                   <button
                     style={{
-                      backgroundColor: message.userVote ? "green" : "#eeeeee"
+                      backgroundColor: message.userVote ? "green" : "#eeeeee",
                     }}
                     onClick={upVote(mId)}
                   >
